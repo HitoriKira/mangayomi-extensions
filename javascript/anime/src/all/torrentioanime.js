@@ -1,13 +1,13 @@
 const mangayomiSources = [{
-    "name": "Torrentio Anime (Torrent)",
+    "name": "Torrentio Anime (Debrid & Torrent)",
     "lang": "all",
     "baseUrl": "https://torrentio.strem.fun",
     "apiUrl": "",
     "iconUrl": "https://raw.githubusercontent.com/m2k3a/mangayomi-extensions/main/javascript/icon/all.torrentio.png",
-    "typeSource": "torrent",
+    "typeSource": "torrent", // Leave as torrent, but Debrid links will stream standard HTTP URLs natively
     "isManga": false,
     "itemType": 1,
-    "version": "0.0.2",
+    "version": "0.0.3",
     "pkgPath": "anime/src/all/torrentioanime.js"
 }];
 
@@ -286,60 +286,99 @@ class DefaultExtension extends MProvider {
         let url = "";
         if (values && values.length > 0) {
             const filteredValues = Array.from(values).filter(value => value.trim() !== "").join(",");
-            url += `${key}=${filteredValues}|`;
+            if (filteredValues) {
+                url += `${key}=${filteredValues}|`;
+            }
         }
         return url;
     };
+
     async getVideoList(url) {
         const preferences = new SharedPreferences();
 
         let mainURL = `${this.source.baseUrl}/`;
-        mainURL += this.appendQueryParam("providers", preferences.get("provider_selection"));
-        mainURL += this.appendQueryParam("language", preferences.get("lang_selection"));
-        mainURL += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
-        mainURL += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
+        
+        // 1. Compile configurations filters
+        let configParams = "";
+        configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
+        configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
+        configParams += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
+        configParams += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
+        
+        // Clean trailing configuration pipes
+        configParams = configParams.replace(/\|$/, "");
+
+        // 2. Compile Debrid Parameter String if chosen
+        const debridService = preferences.get("debrid_service");
+        const debridToken = preferences.get("debrid_token").trim();
+        
+        let debridParam = "";
+        if (debridService !== "none" && debridToken !== "") {
+            debridParam = `${debridService}=${debridToken}`;
+        }
+
+        // 3. Chain together properly formatted URL
+        // Syntax needed: baseUrl / configParams / debridParam / url
+        if (configParams && debridParam) {
+            mainURL += `${configParams}|${debridParam}`;
+        } else if (configParams) {
+            mainURL += configParams;
+        } else if (debridParam) {
+            mainURL += debridParam;
+        }
+
+        // Append actual stream file tracking syntax
         mainURL += url;
-        mainURL = mainURL.replace(/\|$/, "");
+
         const responseEpisodes = await this.client.get(mainURL);
         const streamList = JSON.parse(responseEpisodes.body);
-        const animeTrackers = `
-        http://nyaa.tracker.wf:7777/announce,
-        http://anidex.moe:6969/announce,http://tracker.anirena.com:80/announce,
-        udp://tracker.uw0.xyz:6969/announce,
-        http://share.camoe.cn:8080/announce,
-        http://t.nyaatracker.com:80/announce,
-        udp://47.ip-51-68-199.eu:6969/announce,
-        udp://9.rarbg.me:2940,
-        udp://9.rarbg.to:2820,
-        udp://exodus.desync.com:6969/announce,
-        udp://explodie.org:6969/announce,
-        udp://ipv4.tracker.harry.lu:80/announce,
-        udp://open.stealth.si:80/announce,
-        udp://opentor.org:2710/announce,
-        udp://opentracker.i2p.rocks:6969/announce,
-        udp://retracker.lanta-net.ru:2710/announce,
-        udp://tracker.cyberia.is:6969/announce,
-        udp://tracker.dler.org:6969/announce,
-        udp://tracker.ds.is:6969/announce,
-        udp://tracker.internetwarriors.net:1337,
-        udp://tracker.openbittorrent.com:6969/announce,
-        udp://tracker.opentrackr.org:1337/announce,
-        udp://tracker.tiny-vps.com:6969/announce,
-        udp://tracker.torrent.eu.org:451/announce,
-        udp://valakas.rollo.dnsabr.com:2710/announce,
-        udp://www.torrent.eu.org:451/announce
-    `.split(",").map(tracker => tracker.trim()).filter(tracker => tracker);
+        
+        const animeTrackers = [
+            "http://nyaa.tracker.wf:7777/announce",
+            "http://anidex.moe:6969/announce",
+            "http://tracker.anirena.com:80/announce",
+            "udp://tracker.uw0.xyz:6969/announce",
+            "http://share.camoe.cn:8080/announce",
+            "http://t.nyaatracker.com:80/announce",
+            "udp://47.ip-51-68-199.eu:6969/announce",
+            "udp://9.rarbg.me:2940",
+            "udp://9.rarbg.to:2820",
+            "udp://exodus.desync.com:6969/announce",
+            "udp://explodie.org:6969/announce",
+            "udp://ipv4.tracker.harry.lu:80/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://opentor.org:2710/announce",
+            "udp://opentracker.i2p.rocks:6969/announce",
+            "udp://retracker.lanta-net.ru:2710/announce",
+            "udp://tracker.cyberia.is:6969/announce",
+            "udp://tracker.dler.org:6969/announce",
+            "udp://tracker.ds.is:6969/announce",
+            "udp://tracker.internetwarriors.net:1337",
+            "udp://tracker.openbittorrent.com:6969/announce",
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://tracker.tiny-vps.com:6969/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://valakas.rollo.dnsabr.com:2710/announce",
+            "udp://www.torrent.eu.org:451/announce"
+        ];
 
         const videos = this.sortVideos((streamList.streams || []).map(stream => {
-            const hash = `magnet:?xt=urn:btih:${stream.infoHash}&dn=${stream.infoHash}&tr=${animeTrackers.join("&tr=")}&index=${stream.fileIdx}`;
             const videoTitle = `${(stream.name || "").replace("Torrentio\n", "")}\n${stream.title || ""}`.trim();
+            
+            // If Debrid is active, Torrentio parses a direct streaming HTTP link in stream.url
+            // Otherwise it falls back to standard P2P torrent hash.
+            let streamUrl = stream.url;
+            if (!streamUrl) {
+                streamUrl = `magnet:?xt=urn:btih:${stream.infoHash}&dn=${stream.infoHash}&tr=${animeTrackers.join("&tr=")}&index=${stream.fileIdx}`;
+            }
 
             return {
-                url: hash,
-                originalUrl: hash,
+                url: streamUrl,
+                originalUrl: streamUrl,
                 quality: videoTitle,
             };
         }));
+
         const numberOfLinks = preferences.get("number_of_links");
         if (numberOfLinks == "all") {
             return videos;
@@ -364,7 +403,6 @@ class DefaultExtension extends MProvider {
             const isEfficientA = isEfficient && !["hevc", "265", "av1"].some(q => a.quality.toLowerCase().includes(q));
             const isEfficientB = isEfficient && !["hevc", "265", "av1"].some(q => b.quality.toLowerCase().includes(q));
 
-
             return (
                 regexMatchA - regexMatchB ||
                 isDubA - isDubB ||
@@ -373,10 +411,40 @@ class DefaultExtension extends MProvider {
         });
     }
 
-
-
     getSourcePreferences() {
         return [
+            {
+                "key": "debrid_service",
+                "listPreference": {
+                    "title": "Debrid Service Providers",
+                    "summary": "Choose your Premium Debrid Cloud system to stream instant cached video bypasses",
+                    "valueIndex": 0,
+                    "entries": [
+                        "None (Pure P2P Torrenting)",
+                        "Real-Debrid",
+                        "Premiumize",
+                        "AllDebrid",
+                        "Debrid-Link"
+                    ],
+                    "entryValues": [
+                        "none",
+                        "realdebrid",
+                        "premiumize",
+                        "alldebrid",
+                        "debridlink"
+                    ],
+                }
+            },
+            {
+                "key": "debrid_token",
+                "editTextPreference": {
+                    "title": "Debrid API Private Token / Key",
+                    "summary": "Paste your private service account API credentials token here.",
+                    "dialogTitle": "Debrid API Token Setting",
+                    "dialogMessage": "Provide the authorization token key linked inside your chosen provider developer dashboard setups.",
+                    "text": ""
+                }
+            },
             {
                 "key": "number_of_links",
                 "listPreference": {
@@ -498,7 +566,7 @@ class DefaultExtension extends MProvider {
                         "🇲🇽 Latino",
                         "🇰🇷 Korean",
                         "🇨🇳 Chinese",
-                        "🇹🇼 Taiwanese",
+                        "🇹WAN Taiwanese",
                         "🇫🇷 French",
                         "🇩🇪 German",
                         "🇳🇱 Dutch",
@@ -507,7 +575,7 @@ class DefaultExtension extends MProvider {
                         "🇮🇳 Tamil",
                         "🇵🇱 Polish",
                         "🇱🇹 Lithuanian",
-                        "🇱🇻 Latvian",
+                        "🇱嫌 Latvian",
                         "🇪🇪 Estonian",
                         "🇨🇿 Czech",
                         "🇸🇰 Slovakian",
@@ -622,7 +690,7 @@ class DefaultExtension extends MProvider {
                 "key": "efficient",
                 "switchPreferenceCompat": {
                     "title": "Efficient Video Priority",
-                    "summary": "Codec: (HEVC / x265)  & AV1. High-quality video with less data usage.",
+                    "summary": "Codec: (HEVC / x265) & AV1. High-quality video with less data usage.",
                     "value": false
                 }
             }
