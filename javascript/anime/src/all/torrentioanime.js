@@ -7,7 +7,7 @@ const mangayomiSources = [{
     "typeSource": "torrent", // Leave as torrent, but Debrid links will stream standard HTTP URLs natively
     "isManga": false,
     "itemType": 1,
-    "version": "0.0.3",
+    "version": "0.0.4", // Incremented to notice updates safely
     "pkgPath": "anime/src/all/torrentioanime.js"
 }];
 
@@ -424,14 +424,16 @@ class DefaultExtension extends MProvider {
                         "Real-Debrid",
                         "Premiumize",
                         "AllDebrid",
-                        "Debrid-Link"
+                        "Debrid-Link",
+                        "TorBox"
                     ],
                     "entryValues": [
                         "none",
                         "realdebrid",
                         "premiumize",
                         "alldebrid",
-                        "debridlink"
+                        "debridlink",
+                        "torbox"
                     ],
                 }
             },
@@ -578,7 +580,7 @@ class DefaultExtension extends MProvider {
                         "🇱嫌 Latvian",
                         "🇪🇪 Estonian",
                         "🇨🇿 Czech",
-                        "🇸🇰 Slovakian",
+                        "🇸婚 Slovakian",
                         "🇸🇮 Slovenian",
                         "🇭🇺 Hungarian",
                         "🇷🇴 Romanian",
