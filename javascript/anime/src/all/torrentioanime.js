@@ -279,6 +279,9 @@ class DefaultExtension extends MProvider {
     const episodesMap = aniZipData?.episodes || {};
 
     anime.episodes = (() => {
+        // Count total entries inside the episodes map to catch multi-part entries / multi-OVA movies
+        const totalEpisodes = Object.keys(episodesMap).length;
+
         switch (type) {
             case "TV":
             case "ONA":
@@ -298,10 +301,10 @@ class DefaultExtension extends MProvider {
                     if (airDateMs > Date.now()) {
                         continue; 
                     }
-					
-					// Checks if it's a flat string first; if not, safely falls back to object keys
-					const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
-					const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
+                    
+                    // Checks if it's a flat string first; if not, safely falls back to object keys
+                    const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
+                    const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
 
                     parsedEpisodes.push({
                         url: `/stream/series/kitsu:${kitsuId}:${epNum.toFixed(0)}.json`,
@@ -315,6 +318,37 @@ class DefaultExtension extends MProvider {
             }
 
             case "MOVIE": {
+                // If it's technically a "MOVIE" entry but maps to multiple parts/OVAs in the API
+                if (totalEpisodes > 1) {
+                    const parsedEpisodes = [];
+
+                    for (const key in episodesMap) {
+                        if (!episodesMap.hasOwnProperty(key)) continue;
+                        const ep = episodesMap[key];
+                        if (!ep) continue;
+
+                        const epNum = parseFloat(ep.episode);
+                        if (isNaN(epNum)) continue;
+
+                        const airDateMs = ep.airDate ? new Date(ep.airDate).getTime() : 0;
+                        if (airDateMs > Date.now()) continue;
+
+                        const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
+                        // Example title output: "Episode 1: Memory Snow" or "Episode 2: Frozen Bond"
+                        const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
+
+                        parsedEpisodes.push({
+                            // Uses series stream schema because individual segment indices exist
+                            url: `/stream/series/kitsu:${kitsuId}:${epNum.toFixed(0)}.json`,
+                            dateUpload: airDateMs.toString(),
+                            name: epName,
+                        });
+                    }
+
+                    return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
+                }
+
+                // Normal standalone fallback if there is only 1 or 0 metadata episodes indexed
                 let dateUpload = "0";
                 if (episodesMap["1"] && episodesMap["1"].airDate) {
                     dateUpload = new Date(episodesMap["1"].airDate).getTime().toString();
