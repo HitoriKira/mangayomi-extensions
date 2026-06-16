@@ -383,127 +383,126 @@ class DefaultExtension extends MProvider {
     };
 
     async getVideoList(url) {
-        // --- START SPLIT-COUR / TORRENTIO OVERRIDE ---
+    // --- START SPLIT-COUR / TORRENTIO OVERRIDE ---
     let targetUrl = url;
     try {
+        // Detect if this is a Kitsu-based series request
         const match = url.match(/\/stream\/series\/kitsu:(\d+):(\d+)\.json/);
         if (match) {
             const kitsuId = match[1];
             const epNum = parseInt(match[2]);
 
-            // Query Kitsu relationships directly to see if this is a Part 2 / split-cour release
+            // Query Kitsu to see if there is a prequel (Part 1)
             const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
             const relationData = JSON.parse(relationRes.body);
             
             const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
             if (prequel) {
                 const prequelId = prequel.relationships?.destination?.data?.id;
+                // Find the episode count of the prequel from the "included" data
                 const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
                 const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
 
                 if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0) {
-                    // Re-route the stream fetch to Part 1's Kitsu ID + Absolute Episode Number
+                    // Redirect to Part 1's ID and add the episode offset
                     const absoluteEp = epNum + prequelEpCount;
                     targetUrl = `/stream/series/kitsu:${prequelId}:${absoluteEp}.json`;
                 }
             }
         }
     } catch (e) {
-        // Fail-safe: If Kitsu API times out, fallback to original URL so playback doesn't hang
+        // Fail-safe: Fallback to original URL if the Kitsu API request fails
         targetUrl = url;
     }
-        const preferences = new SharedPreferences();
+    // --- END SPLIT-COUR / TORRENTIO OVERRIDE ---
 
-        let mainURL = `${this.source.baseUrl}/`;
-        
-        // 1. Compile configurations filters
-        let configParams = "";
-        configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
-        configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
-        configParams += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
-        configParams += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
-        
-        // Clean trailing configuration pipes
-        configParams = configParams.replace(/\|$/, "");
+    const preferences = new SharedPreferences();
+    let mainURL = `${this.source.baseUrl}/`;
+    
+    // 1. Compile configurations filters
+    let configParams = "";
+    configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
+    configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
+    configParams += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
+    configParams += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
+    
+    configParams = configParams.replace(/\|$/, "");
 
-        // 2. Compile Debrid Parameter String if chosen
-        const debridService = preferences.get("debrid_service");
-        const debridToken = preferences.get("debrid_token").trim();
-        
-        let debridParam = "";
-        if (debridService !== "none" && debridToken !== "") {
-            debridParam = `${debridService}=${debridToken}`;
-        }
-
-        // 3. Chain together properly formatted URL
-        // Syntax needed: baseUrl / configParams / debridParam / url
-        if (configParams && debridParam) {
-            mainURL += `${configParams}|${debridParam}`;
-        } else if (configParams) {
-            mainURL += configParams;
-        } else if (debridParam) {
-            mainURL += debridParam;
-        }
-
-        // Append actual stream file tracking syntax
-        mainURL += url;
-
-        const responseEpisodes = await this.client.get(mainURL);
-        const streamList = JSON.parse(responseEpisodes.body);
-        
-        const animeTrackers = [
-            "http://nyaa.tracker.wf:7777/announce",
-            "http://anidex.moe:6969/announce",
-            "http://tracker.anirena.com:80/announce",
-            "udp://tracker.uw0.xyz:6969/announce",
-            "http://share.camoe.cn:8080/announce",
-            "http://t.nyaatracker.com:80/announce",
-            "udp://47.ip-51-68-199.eu:6969/announce",
-            "udp://9.rarbg.me:2940",
-            "udp://9.rarbg.to:2820",
-            "udp://exodus.desync.com:6969/announce",
-            "udp://explodie.org:6969/announce",
-            "udp://ipv4.tracker.harry.lu:80/announce",
-            "udp://open.stealth.si:80/announce",
-            "udp://opentor.org:2710/announce",
-            "udp://opentracker.i2p.rocks:6969/announce",
-            "udp://retracker.lanta-net.ru:2710/announce",
-            "udp://tracker.cyberia.is:6969/announce",
-            "udp://tracker.dler.org:6969/announce",
-            "udp://tracker.ds.is:6969/announce",
-            "udp://tracker.internetwarriors.net:1337",
-            "udp://tracker.openbittorrent.com:6969/announce",
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://tracker.tiny-vps.com:6969/announce",
-            "udp://tracker.torrent.eu.org:451/announce",
-            "udp://valakas.rollo.dnsabr.com:2710/announce",
-            "udp://www.torrent.eu.org:451/announce"
-        ];
-
-        const videos = this.sortVideos((streamList.streams || []).map(stream => {
-            const videoTitle = `${(stream.name || "").replace("Torrentio\n", "")}\n${stream.title || ""}`.trim();
-            
-            // If Debrid is active, Torrentio parses a direct streaming HTTP link in stream.url
-            // Otherwise it falls back to standard P2P torrent hash.
-            let streamUrl = stream.url;
-            if (!streamUrl) {
-                streamUrl = `magnet:?xt=urn:btih:${stream.infoHash}&dn=${stream.infoHash}&tr=${animeTrackers.join("&tr=")}&index=${stream.fileIdx}`;
-            }
-
-            return {
-                url: streamUrl,
-                originalUrl: streamUrl,
-                quality: videoTitle,
-            };
-        }));
-
-        const numberOfLinks = preferences.get("number_of_links");
-        if (numberOfLinks == "all") {
-            return videos;
-        }
-
-        return videos.slice(0, parseInt(numberOfLinks))
+    // 2. Compile Debrid Parameter String
+    const debridService = preferences.get("debrid_service");
+    const debridToken = preferences.get("debrid_token").trim();
+    
+    let debridParam = "";
+    if (debridService !== "none" && debridToken !== "") {
+        debridParam = `${debridService}=${debridToken}`;
     }
+
+    // 3. Chain together properly formatted URL
+    if (configParams && debridParam) {
+        mainURL += `${configParams}|${debridParam}`;
+    } else if (configParams) {
+        mainURL += configParams;
+    } else if (debridParam) {
+        mainURL += debridParam;
+    }
+
+    // CHANGE MADE HERE: Use targetUrl instead of url
+    mainURL += targetUrl;
+
+    const responseEpisodes = await this.client.get(mainURL);
+    const streamList = JSON.parse(responseEpisodes.body);
+    
+    const animeTrackers = [
+        "http://nyaa.tracker.wf:7777/announce",
+        "http://anidex.moe:6969/announce",
+        "http://tracker.anirena.com:80/announce",
+        "udp://tracker.uw0.xyz:6969/announce",
+        "http://share.camoe.cn:8080/announce",
+        "http://t.nyaatracker.com:80/announce",
+        "udp://47.ip-51-68-199.eu:6969/announce",
+        "udp://9.rarbg.me:2940",
+        "udp://9.rarbg.to:2820",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://ipv4.tracker.harry.lu:80/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://opentor.org:2710/announce",
+        "udp://opentracker.i2p.rocks:6969/announce",
+        "udp://retracker.lanta-net.ru:2710/announce",
+        "udp://tracker.cyberia.is:6969/announce",
+        "udp://tracker.dler.org:6969/announce",
+        "udp://tracker.ds.is:6969/announce",
+        "udp://tracker.internetwarriors.net:1337",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://tracker.tiny-vps.com:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://valakas.rollo.dnsabr.com:2710/announce",
+        "udp://www.torrent.eu.org:451/announce"
+    ];
+
+    const videos = this.sortVideos((streamList.streams || []).map(stream => {
+        const videoTitle = `${(stream.name || "").replace("Torrentio\n", "")}\n${stream.title || ""}`.trim();
+        
+        let streamUrl = stream.url;
+        if (!streamUrl) {
+            streamUrl = `magnet:?xt=urn:btih:${stream.infoHash}&dn=${stream.infoHash}&tr=${animeTrackers.join("&tr=")}&index=${stream.fileIdx}`;
+        }
+
+        return {
+            url: streamUrl,
+            originalUrl: streamUrl,
+            quality: videoTitle,
+        };
+    }));
+
+    const numberOfLinks = preferences.get("number_of_links");
+    if (numberOfLinks == "all") {
+        return videos;
+    }
+
+    return videos.slice(0, parseInt(numberOfLinks));
+}
 
     sortVideos(videos) {
         const preferences = new SharedPreferences();
