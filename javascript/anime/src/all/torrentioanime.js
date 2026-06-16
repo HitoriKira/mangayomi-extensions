@@ -178,6 +178,7 @@ class DefaultExtension extends MProvider {
         return this.parseSearchJson(res.body)
     }
     async getDetail(url) {
+    // 1. GraphQL query updated with required metadata fields from Android reference
     const query = `
         query($id: Int){
             Media(id: $id){
@@ -193,6 +194,10 @@ class DefaultExtension extends MProvider {
                 }
                 description
                 status
+                season
+                seasonYear
+                format
+                episodes
                 tags {
                     name
                 }
@@ -208,16 +213,38 @@ class DefaultExtension extends MProvider {
         }
     `.trim();
 
-    const variables = JSON.stringify({ id: url });
+    const variables = JSON.stringify({ id: parseInt(url) || url });
 
     const res = await this.makeGraphQLRequest(query, variables);
     const media = JSON.parse(res.body).data.Media;
     const anime = {};
-    anime.imageUrl = media?.coverImage?.extraLarge || "";
-    anime.description = (media?.description || "No Description")
-        .replace(/<br><br>/g, "\n")
+
+    // 2. Title Mapping
+    const titleObj = media?.title;
+    anime.title = titleObj?.english?.trim() || titleObj?.romaji || titleObj?.native || "";
+
+    anime.imageUrl = media?.coverImage?.extraLarge || media?.coverImage?.large || "";
+
+    // 3. Description parsing + metadata append matching Android buildString logic
+    let desc = media?.description || "No Description";
+    desc = desc
+        .replace(/<br>\n/g, "\n")
+        .replace(/<br>/g, "\n")
         .replace(/<.*?>/g, "");
 
+    let metaDetails = "";
+    if (media?.season || media?.seasonYear) {
+        metaDetails += `\n\nRelease: ${media.season || ""} ${media.seasonYear || ""}`.trimEnd();
+    }
+    if (media?.format) {
+        metaDetails += `\nType: ${media.format}`;
+    }
+    if (media?.episodes) {
+        metaDetails += `\nTotal Episode Count: ${media.episodes}`;
+    }
+    anime.description = (desc + metaDetails).trim();
+
+    // 4. Status Mapping
     anime.status = (() => {
         switch (media?.status) {
             case "RELEASING":
@@ -233,84 +260,105 @@ class DefaultExtension extends MProvider {
         }
     })();
 
+    // FIXED: Removed .join(", ") to keep this as a raw Array/List for Dart's type casting
     const tagsList = media?.tags?.map(tag => tag.name).filter(Boolean) || [];
     const genresList = media?.genres || [];
     anime.genre = [...new Set([...tagsList, ...genresList])].sort();
-    
+
+    // Kept as String because your original code explicitly used .join(", ") here
     const studiosList = media?.studios?.nodes?.map(node => node.name).filter(Boolean) || [];
     anime.author = studiosList.sort().join(", ");
 
-    // Fetch initial mappings
+    // 5. Episode Extraction (Matches Android's direct single-fetch ani.zip pipeline)
     const response = await this.client.get(`https://api.ani.zip/mappings?anilist_id=${url}`);
     const aniZipData = JSON.parse(response.body);
-    const kitsuId = aniZipData.mappings?.kitsu_id?.toString() || "";
-
-    let targetKitsuId = kitsuId;
-    let absoluteOffset = 0;
-
-    // Split-cour automation engine
-    const aniZipEpisodes = aniZipData.episodes || {};
-    const firstEpKey = Object.keys(aniZipEpisodes)[0];
-    if (firstEpKey) {
-        const firstEp = aniZipEpisodes[firstEpKey];
-        const relNum = parseInt(firstEp.episode);
-        const absNum = parseInt(firstEp.absoluteEpisodeNumber);
-        
-        // If absolute number is greater than relative number, we are in a Part 2 / split cour
-        if (!isNaN(relNum) && !isNaN(absNum) && absNum > relNum) {
-            absoluteOffset = absNum - relNum;
-            
-            // Query Kitsu to find the prequel ID (Main Season / Part 1)
-            try {
-                const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
-                const relationData = JSON.parse(relationRes.body);
-                const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
-                if (prequel?.relationships?.destination?.data?.id) {
-                    targetKitsuId = prequel.relationships.destination.data.id.toString();
-                }
-            } catch (e) {
-                // Fail-safe fallback to current ID if Kitsu API faces issues
-                targetKitsuId = kitsuId;
-            }
-        }
-    }
-
-    const responseEpisodes = await this.client.get(`https://anime-kitsu.strem.fun/meta/series/kitsu%3A${kitsuId}.json`);
-    const episodeList = JSON.parse(responseEpisodes.body);
     
-    anime.episodes = (() => {
-        switch (episodeList.meta?.type) {
-            case "series": {
-                const videos = episodeList.meta.videos || [];
-                return videos
-                    .filter(video => video.thumbnail !== null && ((video.released ? new Date(video.released) : Date.now()) < Date.now()))
-                    .map(video => {
-                        const releaseDate = video.released ? new Date(video.released) : Date.now();
-                        
-                        // Recalculate stream URL parameters if an offset exists
-                        const currentEpNum = parseInt(video.episode);
-                        const targetUrl = absoluteOffset > 0 
-                            ? `/stream/series/kitsu:${targetKitsuId}:${currentEpNum + absoluteOffset}.json`
-                            : `/stream/series/${video.id}.json`;
+    const mappings = aniZipData?.mappings || {};
+    const type = mappings.type;
+    const kitsuId = mappings.kitsu_id;
+    const episodesMap = aniZipData?.episodes || {};
 
-                        return {
-                            url: targetUrl,
-                            dateUpload: releaseDate.valueOf().toString(),
-                            name: `Episode ${video.episode} : ${video.title
-                                ?.replace(/^Episode /, "")
-                                ?.replace(/^\d+\s*/, "")
-                                ?.trim()}`,
-                        };
-                    })
-                    .reverse();
+    anime.episodes = (() => {
+        // Count total entries inside the episodes map to catch multi-part entries / multi-OVA movies
+        const totalEpisodes = Object.keys(episodesMap).length;
+
+        switch (type) {
+            case "TV":
+            case "ONA":
+            case "OVA": {
+                const parsedEpisodes = [];
+
+                for (const key in episodesMap) {
+                    if (!episodesMap.hasOwnProperty(key)) continue;
+                    const ep = episodesMap[key];
+                    if (!ep) continue;
+
+                    const epNum = parseFloat(ep.episode);
+                    if (isNaN(epNum)) continue;
+
+                    // Match Android logic: filtering out future unreleased episodes
+                    const airDateMs = ep.airDate ? new Date(ep.airDate).getTime() : 0;
+                    if (airDateMs > Date.now()) {
+                        continue; 
+                    }
+                    
+                    // Checks if it's a flat string first; if not, safely falls back to object keys
+                    const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
+                    const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
+
+                    parsedEpisodes.push({
+                        url: `/stream/series/kitsu:${kitsuId}:${epNum.toFixed(0)}.json`,
+                        dateUpload: airDateMs.toString(),
+                        name: epName,
+                    });
+                }
+
+                // Sort ascending by episode number, then reverse for UI display layout
+                return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
             }
 
-            case "movie": {
-                const kitsuMovieId = episodeList.meta.kitsuId;
+            case "MOVIE": {
+                // If it's technically a "MOVIE" entry but maps to multiple parts/OVAs in the API
+                if (totalEpisodes > 1) {
+                    const parsedEpisodes = [];
+
+                    for (const key in episodesMap) {
+                        if (!episodesMap.hasOwnProperty(key)) continue;
+                        const ep = episodesMap[key];
+                        if (!ep) continue;
+
+                        const epNum = parseFloat(ep.episode);
+                        if (isNaN(epNum)) continue;
+
+                        const airDateMs = ep.airDate ? new Date(ep.airDate).getTime() : 0;
+                        if (airDateMs > Date.now()) continue;
+
+                        const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
+                        // Example title output: "Episode 1: Memory Snow" or "Episode 2: Frozen Bond"
+                        const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
+
+                        parsedEpisodes.push({
+                            // Uses series stream schema because individual segment indices exist
+                            url: `/stream/series/kitsu:${kitsuId}:${epNum.toFixed(0)}.json`,
+                            dateUpload: airDateMs.toString(),
+                            name: epName,
+                        });
+                    }
+
+                    return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
+                }
+
+                // Normal standalone fallback if there is only 1 or 0 metadata episodes indexed
+                let dateUpload = "0";
+                if (episodesMap["1"] && episodesMap["1"].airDate) {
+                    dateUpload = new Date(episodesMap["1"].airDate).getTime().toString();
+                }
+
                 return [
                     {
-                        url: `/stream/movie/${kitsuMovieId}.json`,
+                        url: `/stream/movie/kitsu:${kitsuId}.json`,
                         name: "Movie",
+                        dateUpload: dateUpload,
                     },
                 ].reverse();
             }
@@ -323,16 +371,47 @@ class DefaultExtension extends MProvider {
     return anime;
 }
 
-appendQueryParam(key, values) {
-    let url = "";
-    if (values && values.length > 0) {
-        const filteredValues = Array.from(values).filter(value => value.trim() !== "").join(",");
-        url += `${key}=${filteredValues}|`;
-    }
-    return url;
-}
+    appendQueryParam(key, values) {
+        let url = "";
+        if (values && values.length > 0) {
+            const filteredValues = Array.from(values).filter(value => value.trim() !== "").join(",");
+            if (filteredValues) {
+                url += `${key}=${filteredValues}|`;
+            }
+        }
+        return url;
+    };
 
     async getVideoList(url) {
+        // --- START SPLIT-COUR / TORRENTIO OVERRIDE ---
+    let targetUrl = url;
+    try {
+        const match = url.match(/\/stream\/series\/kitsu:(\d+):(\d+)\.json/);
+        if (match) {
+            const kitsuId = match[1];
+            const epNum = parseInt(match[2]);
+
+            // Query Kitsu relationships directly to see if this is a Part 2 / split-cour release
+            const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
+            const relationData = JSON.parse(relationRes.body);
+            
+            const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
+            if (prequel) {
+                const prequelId = prequel.relationships?.destination?.data?.id;
+                const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
+                const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
+
+                if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0) {
+                    // Re-route the stream fetch to Part 1's Kitsu ID + Absolute Episode Number
+                    const absoluteEp = epNum + prequelEpCount;
+                    targetUrl = `/stream/series/kitsu:${prequelId}:${absoluteEp}.json`;
+                }
+            }
+        }
+    } catch (e) {
+        // Fail-safe: If Kitsu API times out, fallback to original URL so playback doesn't hang
+        targetUrl = url;
+    }
         const preferences = new SharedPreferences();
 
         let mainURL = `${this.source.baseUrl}/`;
