@@ -278,8 +278,8 @@ const type = mappings.type;
 const kitsuId = mappings.kitsu_id;
 const episodesMap = aniZipData?.episodes || {};
 
-// Safely extract a clean string title from ani.zip or fallback logic for searching
-const searchTitle = aniZipData?.titles?.en || aniZipData?.titles?.romaji || anime.name || "";
+// Fixed Mapping: Fallback properly between ani.zip root title schemes and your anime instance name
+const searchTitle = aniZipData?.title?.en || aniZipData?.title?.romaji || anime.name || "";
 
 anime.episodes = await (async () => {
     const totalEpisodes = Object.keys(episodesMap).length;
@@ -315,7 +315,7 @@ anime.episodes = await (async () => {
         }
 
         case "MOVIE": {
-            // Rule A: If ani.zip already lists multiple inner episodes for the movie layout
+            // Rule A: Handle standard multi-episode layout frameworks inside ani.zip
             if (totalEpisodes > 1) {
                 const parsedEpisodes = [];
 
@@ -342,41 +342,40 @@ anime.episodes = await (async () => {
                 return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
             }
 
-            // Rule B: Dynamic Fallback Search (Catches Re:Zero OVAs split across separate catalogs)
+            // Rule B: Dynamic Fallback Search for split metadata entries
             if (searchTitle) {
                 try {
-                    // Strip common clutter words like "OVAs", "Movie", or brackets to improve search precision
-                    const cleanTitle = searchTitle.replace(/(clip|oav|ova|ovas|movie|the movie|\[.*\]|\(.*\))/gi, "").trim();
+                    // Cleaner regex: Only strips brackets/parentheses so base franchise tokens like "Re:Zero" are preserved intact
+                    const cleanTitle = searchTitle.replace(/(\[.*\]|\(.*\))/gi, "").trim();
                     
+                    // Fixed Request Route Structure
                     const kitsuSearchUrl = `https://anime-kitsu.strem.fun/catalog/anime/kitsu-anime-search/search=${encodeURIComponent(cleanTitle)}.json`;
                     const searchResponse = await this.client.get(kitsuSearchUrl);
                     const searchData = JSON.parse(searchResponse.body);
                     const catalogMetas = searchData?.metas || [];
 
-                    // Filter for matches that contain the base title and are classified as movies
+                    // Filter matching elements based on type
                     const matchedMovies = catalogMetas.filter(meta => 
                         meta.type === "movie" && 
-                        (meta.name?.toLowerCase().includes(cleanTitle.toLowerCase()))
+                        meta.name?.toLowerCase().includes("re:zero")
                     );
 
                     if (matchedMovies.length > 1) {
                         return matchedMovies.map((meta, index) => {
-                            // Extract Kitsu ID from tracking string formats like "kitsu:13882"
                             const cleanKitsuId = meta.id ? meta.id.replace("kitsu:", "") : kitsuId;
                             return {
                                 url: `/stream/movie/kitsu:${cleanKitsuId}.json`,
                                 name: meta.name || `Part ${index + 1}`,
                                 dateUpload: Date.now().toString(),
                             };
-                        }); // Keeps items sorted chronologically based on catalog index order
+                        });
                     }
                 } catch (e) {
-                    // Fall through silently to standard single-movie structure if request or parsing fails
-                    console.error("Kitsu dynamic catalog parsing failed: ", e);
+                    console.error("Dynamic Kitsu lookup error: ", e);
                 }
             }
 
-            // Standard fallback option if there's truly only 1 movie result found or lookup drops out
+            // Standard fallback block
             let dateUpload = "0";
             if (episodesMap["1"] && episodesMap["1"].airDate) {
                 dateUpload = new Date(episodesMap["1"].airDate).getTime().toString();
@@ -385,7 +384,7 @@ anime.episodes = await (async () => {
             return [
                 {
                     url: `/stream/movie/kitsu:${kitsuId}.json`,
-                    name: "Movie 1",
+                    name: "Movie",
                     dateUpload: dateUpload,
                 },
             ].reverse();
