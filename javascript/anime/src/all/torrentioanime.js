@@ -385,7 +385,7 @@ anime.episodes = await (async () => {
             return [
                 {
                     url: `/stream/movie/kitsu:${kitsuId}.json`,
-                    name: "Movie",
+                    name: "Movie 1",
                     dateUpload: dateUpload,
                 },
             ].reverse();
