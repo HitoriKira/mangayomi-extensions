@@ -345,40 +345,41 @@ class DefaultExtension extends MProvider {
     };
 
     async getVideoList(url) {
+    // 1. By bypassing the nested prequel lookups, we prevent multi-part splits from throwing errors
     let targetUrl = url;
+
+    // 2. Head straight into building your configurations safely
+    const preferences = new SharedPreferences();
+    let mainURL = `${mangayomiSources[0].baseUrl}/`;
     
-    // 1. Isolate the prequel lookups inside a completely safe wrapper
-    try {
-        const match = url.match(/\/stream\/series\/kitsu:(\d+):(\d+)\.json/);
-        if (match) {
-            const kitsuId = match[1];
-            const epNum = parseInt(match[2]);
+    let configParams = "";
+    configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
+    configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
+    configParams += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
+    configParams += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
+    
+    configParams = configParams.replace(/\|$/, "");
 
-            const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
-            
-            if (relationRes && relationRes.body) {
-                const relationData = JSON.parse(relationRes.body);
-                const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
-                
-                if (prequel) {
-                    const prequelId = prequel.relationships?.destination?.data?.id;
-                    const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
-                    const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
-
-                    // Only map if it's a standard TV entry to avoid breaking on Movie/OVA IDs
-                    if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0 && includedDestination?.attributes?.subtype === "TV") {
-                        targetUrl = `/stream/series/kitsu:${prequelId}:${epNum + prequelEpCount}\.json`;
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        console.error("Prequel resolution failed, reverting to original stream URL mapping: ", e);
-        targetUrl = url; // Now safely preserves the clean stream route
+    const debridService = preferences.get("debrid_service");
+    const debridToken = preferences.get("debrid_token").trim();
+    
+    let debridParam = "";
+    if (debridService !== "none" && debridToken !== "") {
+        debridParam = `${debridService}=${debridToken}`;
     }
 
-    const preferences = new SharedPreferences();
-    let mainURL = `${mangayomiSources[0].baseUrl}/`;    
+    if (configParams && debridParam) {
+        mainURL += `${configParams}|${debridParam}`;
+    } else if (configParams) {
+        mainURL += configParams;
+    } else if (debridParam) {
+        mainURL += debridParam;
+    }
+
+    mainURL += targetUrl;
+
+    const responseEpisodes = await this.client.get(mainURL);
+    const streamList = JSON.parse(responseEpisodes.body);    
     
     let configParams = "";
     configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
