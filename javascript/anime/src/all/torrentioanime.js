@@ -381,35 +381,6 @@ class DefaultExtension extends MProvider {
     const responseEpisodes = await this.client.get(mainURL);
     const streamList = JSON.parse(responseEpisodes.body);    
     
-    let configParams = "";
-    configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
-    configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
-    configParams += this.appendQueryParam("qualityfilter", preferences.get("quality_selection"));
-    configParams += this.appendQueryParam("sort", new Set([preferences.get("sorting_link")]));
-    
-    configParams = configParams.replace(/\|$/, "");
-
-    const debridService = preferences.get("debrid_service");
-    const debridToken = preferences.get("debrid_token").trim();
-    
-    let debridParam = "";
-    if (debridService !== "none" && debridToken !== "") {
-        debridParam = `${debridService}=${debridToken}`;
-    }
-
-    if (configParams && debridParam) {
-        mainURL += `${configParams}|${debridParam}`;
-    } else if (configParams) {
-        mainURL += configParams;
-    } else if (debridParam) {
-        mainURL += debridParam;
-    }
-
-    mainURL += targetUrl;
-
-    const responseEpisodes = await this.client.get(mainURL);
-    const streamList = JSON.parse(responseEpisodes.body);
-    
     const animeTrackers = [
         "http://nyaa.tracker.wf:7777/announce",
         "http://anidex.moe:6969/announce",
