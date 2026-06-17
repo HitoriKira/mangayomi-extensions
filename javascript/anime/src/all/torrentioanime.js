@@ -345,8 +345,41 @@ class DefaultExtension extends MProvider {
     };
 
     async getVideoList(url) {
-    // 1. By bypassing the nested prequel lookups, we prevent multi-part splits from throwing errors
     let targetUrl = url;
+    try {
+        const match = url.match(/\/stream\/series\/kitsu:(\d+):(\d+)\.json/);
+        if (match) {
+            const kitsuId = match[1];
+            const epNum = parseInt(match[2]);
+
+            // Strict Whitelist: Only run absolute calculation for these specific Kitsu IDs
+            // 18343 = How a Realist Hero Rebuilt the Kingdom Part 2
+            const absoluteNumberingWhitelist = ["45252"]; 
+
+            if (absoluteNumberingWhitelist.includes(kitsuId)) {
+                const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
+                
+                if (relationRes && relationRes.body) {
+                    const relationData = JSON.parse(relationRes.body);
+                    const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
+                    
+                    if (prequel) {
+                        const prequelId = prequel.relationships?.destination?.data?.id;
+                        const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
+                        const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
+
+                        if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0 && includedDestination?.attributes?.subtype === "TV") {
+                            const absoluteEp = epNum + prequelEpCount;
+                            targetUrl = `/stream/series/kitsu:${prequelId}:${absoluteEp}.json`;
+                        }
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Absolute calculation bypassed:", e);
+        targetUrl = url; // Safe fallback path
+    }
 
     // 2. Head straight into building your configurations safely
     const preferences = new SharedPreferences();
