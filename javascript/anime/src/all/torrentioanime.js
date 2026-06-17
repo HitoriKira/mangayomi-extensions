@@ -4,10 +4,10 @@ const mangayomiSources = [{
     "baseUrl": "https://torrentio.strem.fun",
     "apiUrl": "",
     "iconUrl": "https://raw.githubusercontent.com/m2k3a/mangayomi-extensions/main/javascript/icon/all.torrentio.png",
-    "typeSource": "torrent", // Leave as torrent, but Debrid links will stream standard HTTP URLs natively
+    "typeSource": "torrent", 
     "isManga": false,
     "itemType": 1,
-    "version": "0.0.5", // Incremented to notice updates safely
+    "version": "0.0.5", 
     "pkgPath": "anime/src/all/torrentioanime.js"
 }];
 
@@ -99,10 +99,7 @@ class DefaultExtension extends MProvider {
         `.trim();
     }
     async makeGraphQLRequest(query, variables) {
-        const res = await this.client.post("https://graphql.anilist.co", {},
-            {
-                query, variables
-            });
+        const res = await this.client.post("https://graphql.anilist.co", {}, { query, variables });
         return res;
     }
     parseSearchJson(jsonLine, isLatestQuery = false) {
@@ -151,7 +148,6 @@ class DefaultExtension extends MProvider {
         });
 
         const res = await this.makeGraphQLRequest(this.anilistQuery(), variables);
-
         return this.parseSearchJson(res.body)
     }
     async getLatestUpdates(page) {
@@ -162,7 +158,6 @@ class DefaultExtension extends MProvider {
         });
 
         const res = await this.makeGraphQLRequest(this.anilistLatestQuery(), variables);
-
         return this.parseSearchJson(res.body, true)
     }
     async search(query, page, filters) {
@@ -174,11 +169,9 @@ class DefaultExtension extends MProvider {
         });
 
         const res = await this.makeGraphQLRequest(this.anilistQuery(), variables);
-
         return this.parseSearchJson(res.body)
     }
     async getDetail(url) {
-    // 1. GraphQL query updated with required metadata fields from Android reference
     const query = `
         query($id: Int){
             Media(id: $id){
@@ -219,13 +212,10 @@ class DefaultExtension extends MProvider {
     const media = JSON.parse(res.body).data.Media;
     const anime = {};
 
-    // 2. Title Mapping
     const titleObj = media?.title;
     anime.title = titleObj?.english?.trim() || titleObj?.romaji || titleObj?.native || "";
-
     anime.imageUrl = media?.coverImage?.extraLarge || media?.coverImage?.large || "";
 
-    // 3. Description parsing + metadata append matching Android buildString logic
     let desc = media?.description || "No Description";
     desc = desc
         .replace(/<br>\n/g, "\n")
@@ -244,7 +234,6 @@ class DefaultExtension extends MProvider {
     }
     anime.description = (desc + metaDetails).trim();
 
-    // 4. Status Mapping
     anime.status = (() => {
         switch (media?.status) {
             case "RELEASING":
@@ -260,63 +249,42 @@ class DefaultExtension extends MProvider {
         }
     })();
 
-    // FIXED: Removed .join(", ") to keep this as a raw Array/List for Dart's type casting
     const tagsList = media?.tags?.map(tag => tag.name).filter(Boolean) || [];
     const genresList = media?.genres || [];
     anime.genre = [...new Set([...tagsList, ...genresList])].sort();
 
-    // Kept as String because your original code explicitly used .join(", ") here
     const studiosList = media?.studios?.nodes?.map(node => node.name).filter(Boolean) || [];
     anime.author = studiosList.sort().join(", ");
 
-    // 5. Episode Extraction (Matches Android's direct single-fetch ani.zip pipeline)
-const response = await this.client.get(`https://api.ani.zip/mappings?anilist_id=${url}`);
-const aniZipData = JSON.parse(response.body);
+    const response = await this.client.get(`https://api.ani.zip/mappings?anilist_id=${url}`);
+    const aniZipData = JSON.parse(response.body);
 
-const mappings = aniZipData?.mappings || {};
-const type = mappings.type;
-const kitsuId = mappings.kitsu_id;
-const episodesMap = aniZipData?.episodes || {};
+    const mappings = aniZipData?.mappings || {};
+    const type = mappings.type;
+    const kitsuId = mappings.kitsu_id;
+    const episodesMap = aniZipData?.episodes || {};
 
-// Fallback properly between ani.zip root title schemes and your anime instance name
-const searchTitle = aniZipData?.title?.en || aniZipData?.title?.romaji || anime.name || "";
+    // FIXED: Changed fallback from anime.name to anime.title
+    const searchTitle = aniZipData?.title?.en || aniZipData?.title?.romaji || anime.title || "";
 
-anime.episodes = await (async () => {
-    const totalEpisodes = Object.keys(episodesMap).length;
+    anime.episodes = await (async () => {
+        const totalEpisodes = Object.keys(episodesMap).length;
 
-    switch (type) {
-        case "TV":
-        case "ONA":
-        case "OVA": {
-            const parsedEpisodes = [];
+        // Shared safe sorting function to prevent NaN lookup failures
+        const safeEpisodeSort = (arr) => {
+            return arr.sort((a, b) => {
+                const matchA = a.name.match(/\d+/);
+                const matchB = b.name.match(/\d+/);
+                const valA = matchA ? parseFloat(matchA[0]) : 0;
+                const valB = matchB ? parseFloat(matchB[0]) : 0;
+                return valA - valB;
+            }).reverse();
+        };
 
-            for (const key in episodesMap) {
-                if (!episodesMap.hasOwnProperty(key)) continue;
-                const ep = episodesMap[key];
-                if (!ep) continue;
-
-                const epNum = parseFloat(ep.episode);
-                if (isNaN(epNum)) continue;
-
-                const airDateMs = ep.airDate ? new Date(ep.airDate).getTime() : 0;
-                if (airDateMs > Date.now()) continue; 
-                
-                const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
-                const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
-
-                parsedEpisodes.push({
-                    url: `/stream/series/kitsu:${kitsuId}:${epNum.toFixed(0)}.json`,
-                    dateUpload: airDateMs.toString(),
-                    name: epName,
-                });
-            }
-
-            return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
-        }
-
-        case "MOVIE": {
-            // Rule A: Handle standard multi-episode layout frameworks inside ani.zip
-            if (totalEpisodes > 1) {
+        switch (type) {
+            case "TV":
+            case "ONA":
+            case "OVA": {
                 const parsedEpisodes = [];
 
                 for (const key in episodesMap) {
@@ -328,8 +296,8 @@ anime.episodes = await (async () => {
                     if (isNaN(epNum)) continue;
 
                     const airDateMs = ep.airDate ? new Date(ep.airDate).getTime() : 0;
-                    if (airDateMs > Date.now()) continue;
-
+                    if (airDateMs > Date.now()) continue; 
+                    
                     const title = typeof ep.title === 'string' ? ep.title : (ep.title?.en || ep.title?.romaji || "");
                     const epName = title ? `Episode ${ep.episode}: ${title}` : `Episode ${ep.episode}`;
 
@@ -339,122 +307,79 @@ anime.episodes = await (async () => {
                         name: epName,
                     });
                 }
-                return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
+                return safeEpisodeSort(parsedEpisodes);
             }
 
-            // Rule B: Dynamic Fallback Search for split metadata entries (e.g., Re:Zero OVAs)
-            if (searchTitle) {
-                try {
-                    // Extract a clean core token ("Re:Zero") to broad-match split catalogs safely
-                    const coreTitle = searchTitle.split(/[:(-]/)[0].trim().toLowerCase(); 
-                    
-                    const kitsuSearchUrl = `https://anime-kitsu.strem.fun/catalog/anime/kitsu-anime-search/search=${encodeURIComponent(searchTitle)}.json`;
-                    const searchResponse = await this.client.get(kitsuSearchUrl);
-                    const searchData = JSON.parse(searchResponse.body);
-                    const catalogMetas = searchData?.metas || [];
+            case "MOVIE": {
+                    const kitsuId = episodeList.meta.kitsuId;
 
-                    // Filter out announcements or PV entries, matching valid core titles
-                    const matchedEntries = catalogMetas.filter(meta => 
-                        !meta.name?.toLowerCase().includes("announcement") &&
-                        !meta.name?.toLowerCase().includes("pv") &&
-                        meta.name?.toLowerCase().includes(coreTitle)
-                    );
-
-                    if (matchedEntries.length > 1) {
-                        return matchedEntries.map((meta, index) => {
-                            const cleanKitsuId = meta.id ? meta.id.replace("kitsu:", "") : kitsuId;
-                            
-                            // CRITICAL FIX: If Kitsu labeled it as a "series", we must format it 
-                            // with a trailing episode index (:1) so Torrentio resolves it correctly!
-                            const isSeriesType = meta.type === "series";
-                            const streamUrl = isSeriesType 
-                                ? `/stream/series/kitsu:${cleanKitsuId}:1.json`
-                                : `/stream/movie/kitsu:${cleanKitsuId}.json`;
-
-                            return {
-                                url: streamUrl,
-                                name: meta.name || `Part ${index + 1}`,
-                                dateUpload: Date.now().toString(),
-                            };
-                        }); // Keeps them in chronological catalog order
-                    }
-                } catch (e) {
-                    console.error("Dynamic Kitsu lookup error: ", e);
+                    return [
+                        {
+                            url: `/stream/movie/${kitsuId}.json`,
+                            name: "Movie",
+                        },
+                    ].reverse();
                 }
+
+                default:
+                    return [];
             }
-
-            // Standard fallback block if only one match is found
-            let dateUpload = "0";
-            if (episodesMap["1"] && episodesMap["1"].airDate) {
-                dateUpload = new Date(episodesMap["1"].airDate).getTime().toString();
-            }
-
-            return [
-                {
-                    url: `/stream/movie/kitsu:${kitsuId}.json`,
-                    name: "Movie",
-                    dateUpload: dateUpload,
-                },
-            ].reverse();
-        }
-
-        default:
-            return [];
-    }
-})();
+        })();
 
     return anime;
 }
 
+    // FIXED: Standardized array-checks to handle both raw Arrays and Sets accurately
     appendQueryParam(key, values) {
         let url = "";
-        if (values && values.length > 0) {
-            const filteredValues = Array.from(values).filter(value => value.trim() !== "").join(",");
-            if (filteredValues) {
-                url += `${key}=${filteredValues}|`;
+        if (values) {
+            const valueArray = Array.from(values);
+            if (valueArray.length > 0) {
+                const filteredValues = valueArray.filter(value => value && value.trim() !== "").join(",");
+                if (filteredValues) {
+                    url += `${key}=${filteredValues}|`;
+                }
             }
         }
         return url;
     };
 
     async getVideoList(url) {
-    // --- START SPLIT-COUR / TORRENTIO OVERRIDE ---
     let targetUrl = url;
+    
+    // 1. Isolate the prequel lookups inside a completely safe wrapper
     try {
-        // Detect if this is a Kitsu-based series request
         const match = url.match(/\/stream\/series\/kitsu:(\d+):(\d+)\.json/);
         if (match) {
             const kitsuId = match[1];
             const epNum = parseInt(match[2]);
 
-            // Query Kitsu to see if there is a prequel (Part 1)
             const relationRes = await this.client.get(`https://kitsu.io/api/edge/anime/${kitsuId}/media-relationships?include=destination`);
-            const relationData = JSON.parse(relationRes.body);
             
-            const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
-            if (prequel) {
-                const prequelId = prequel.relationships?.destination?.data?.id;
-                // Find the episode count of the prequel from the "included" data
-                const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
-                const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
+            if (relationRes && relationRes.body) {
+                const relationData = JSON.parse(relationRes.body);
+                const prequel = relationData.data?.find(r => r.attributes?.role === "prequel");
+                
+                if (prequel) {
+                    const prequelId = prequel.relationships?.destination?.data?.id;
+                    const includedDestination = relationData.included?.find(inc => inc.type === "anime" && inc.id === prequelId);
+                    const prequelEpCount = parseInt(includedDestination?.attributes?.episodeCount);
 
-                if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0) {
-                    // Redirect to Part 1's ID and add the episode offset
-                    const absoluteEp = epNum + prequelEpCount;
-                    targetUrl = `/stream/series/kitsu:${prequelId}:${absoluteEp}.json`;
+                    // Only map if it's a standard TV entry to avoid breaking on Movie/OVA IDs
+                    if (prequelId && !isNaN(prequelEpCount) && prequelEpCount > 0 && includedDestination?.attributes?.subtype === "TV") {
+                        targetUrl = `/stream/series/kitsu:${prequelId}:${epNum + prequelEpCount}\.json`;
+                    }
                 }
             }
         }
     } catch (e) {
-        // Fail-safe: Fallback to original URL if the Kitsu API request fails
-        targetUrl = url;
+        console.error("Prequel resolution failed, reverting to original stream URL mapping: ", e);
+        targetUrl = url; // Now safely preserves the clean stream route
     }
-    // --- END SPLIT-COUR / TORRENTIO OVERRIDE ---
 
     const preferences = new SharedPreferences();
-    let mainURL = `${this.source.baseUrl}/`;
+    let mainURL = `${mangayomiSources[0].baseUrl}/`;    
     
-    // 1. Compile configurations filters
     let configParams = "";
     configParams += this.appendQueryParam("providers", preferences.get("provider_selection"));
     configParams += this.appendQueryParam("language", preferences.get("lang_selection"));
@@ -463,7 +388,6 @@ anime.episodes = await (async () => {
     
     configParams = configParams.replace(/\|$/, "");
 
-    // 2. Compile Debrid Parameter String
     const debridService = preferences.get("debrid_service");
     const debridToken = preferences.get("debrid_token").trim();
     
@@ -472,7 +396,6 @@ anime.episodes = await (async () => {
         debridParam = `${debridService}=${debridToken}`;
     }
 
-    // 3. Chain together properly formatted URL
     if (configParams && debridParam) {
         mainURL += `${configParams}|${debridParam}`;
     } else if (configParams) {
@@ -481,7 +404,6 @@ anime.episodes = await (async () => {
         mainURL += debridParam;
     }
 
-    // CHANGE MADE HERE: Use targetUrl instead of url
     mainURL += targetUrl;
 
     const responseEpisodes = await this.client.get(mainURL);
@@ -546,14 +468,17 @@ anime.episodes = await (async () => {
         const isEfficient = preferences.get("efficient");
 
         return videos.sort((a, b) => {
-            const regexMatchA = /\[(.+?) download\]/.test(a.quality);
-            const regexMatchB = /\[(.+?) download\]/.test(b.quality);
+            const qualityA = a.quality || "";
+            const qualityB = b.quality || "";
 
-            const isDubA = isDub && !a.quality.toLowerCase().includes("dubbed");
-            const isDubB = isDub && !b.quality.toLowerCase().includes("dubbed");
+            const regexMatchA = /\[(.+?) download\]/.test(qualityA);
+            const regexMatchB = /\[(.+?) download\]/.test(qualityB);
 
-            const isEfficientA = isEfficient && !["hevc", "265", "av1"].some(q => a.quality.toLowerCase().includes(q));
-            const isEfficientB = isEfficient && !["hevc", "265", "av1"].some(q => b.quality.toLowerCase().includes(q));
+            const isDubA = isDub && !qualityA.toLowerCase().includes("dubbed");
+            const isDubB = isDub && !qualityB.toLowerCase().includes("dubbed");
+
+            const isEfficientA = isEfficient && !["hevc", "265", "av1"].some(q => qualityA.toLowerCase().includes(q));
+            const isEfficientB = isEfficient && !["hevc", "265", "av1"].some(q => qualityB.toLowerCase().includes(q));
 
             return (
                 regexMatchA - regexMatchB ||
@@ -738,7 +663,7 @@ anime.episodes = await (async () => {
                         "🇷🇴 Romanian",
                         "🇧🇬 Bulgarian",
                         "🇷🇸 Serbian",
-                        "🇭🇷 Croatian",
+                        "🇭Croatian",
                         "🇺🇦 Ukrainian",
                         "🇬🇷 Greek",
                         "🇩🇰 Danish",
@@ -750,7 +675,7 @@ anime.episodes = await (async () => {
                         "🇮🇷 Persian",
                         "🇮🇱 Hebrew",
                         "🇻🇳 Vietnamese",
-                        "🇮🇩 Indonesian",
+                        "🇮 Indonesia",
                         "🇲🇾 Malay",
                         "🇹🇭 Thai",],
                     "entryValues": [
