@@ -7,7 +7,7 @@ const mangayomiSources = [{
     "typeSource": "torrent", // Leave as torrent, but Debrid links will stream standard HTTP URLs natively
     "isManga": false,
     "itemType": 1,
-    "version": "0.0.4", // Incremented to notice updates safely
+    "version": "0.0.5", // Incremented to notice updates safely
     "pkgPath": "anime/src/all/torrentioanime.js"
 }];
 
@@ -278,7 +278,7 @@ const type = mappings.type;
 const kitsuId = mappings.kitsu_id;
 const episodesMap = aniZipData?.episodes || {};
 
-// Fixed Mapping: Fallback properly between ani.zip root title schemes and your anime instance name
+// Fallback properly between ani.zip root title schemes and your anime instance name
 const searchTitle = aniZipData?.title?.en || aniZipData?.title?.romaji || anime.name || "";
 
 anime.episodes = await (async () => {
@@ -342,40 +342,48 @@ anime.episodes = await (async () => {
                 return parsedEpisodes.sort((a, b) => parseFloat(a.name.match(/\d+/)) - parseFloat(b.name.match(/\d+/))).reverse();
             }
 
-            // Rule B: Dynamic Fallback Search for split metadata entries
+            // Rule B: Dynamic Fallback Search for split metadata entries (e.g., Re:Zero OVAs)
             if (searchTitle) {
                 try {
-                    // Cleaner regex: Only strips brackets/parentheses so base franchise tokens like "Re:Zero" are preserved intact
-                    const cleanTitle = searchTitle.replace(/(\[.*\]|\(.*\))/gi, "").trim();
+                    // Extract a clean core token ("Re:Zero") to broad-match split catalogs safely
+                    const coreTitle = searchTitle.split(/[:(-]/)[0].trim().toLowerCase(); 
                     
-                    // Fixed Request Route Structure
-                    const kitsuSearchUrl = `https://anime-kitsu.strem.fun/catalog/anime/kitsu-anime-search/search=${encodeURIComponent(cleanTitle)}.json`;
+                    const kitsuSearchUrl = `https://anime-kitsu.strem.fun/catalog/anime/kitsu-anime-search/search=${encodeURIComponent(searchTitle)}.json`;
                     const searchResponse = await this.client.get(kitsuSearchUrl);
                     const searchData = JSON.parse(searchResponse.body);
                     const catalogMetas = searchData?.metas || [];
 
-                    // Filter matching elements based on type
-                    const matchedMovies = catalogMetas.filter(meta => 
-                        meta.type === "movie" && 
-                        meta.name?.toLowerCase().includes("re:zero")
+                    // Filter out announcements or PV entries, matching valid core titles
+                    const matchedEntries = catalogMetas.filter(meta => 
+                        !meta.name?.toLowerCase().includes("announcement") &&
+                        !meta.name?.toLowerCase().includes("pv") &&
+                        meta.name?.toLowerCase().includes(coreTitle)
                     );
 
-                    if (matchedMovies.length > 1) {
-                        return matchedMovies.map((meta, index) => {
+                    if (matchedEntries.length > 1) {
+                        return matchedEntries.map((meta, index) => {
                             const cleanKitsuId = meta.id ? meta.id.replace("kitsu:", "") : kitsuId;
+                            
+                            // CRITICAL FIX: If Kitsu labeled it as a "series", we must format it 
+                            // with a trailing episode index (:1) so Torrentio resolves it correctly!
+                            const isSeriesType = meta.type === "series";
+                            const streamUrl = isSeriesType 
+                                ? `/stream/series/kitsu:${cleanKitsuId}:1.json`
+                                : `/stream/movie/kitsu:${cleanKitsuId}.json`;
+
                             return {
-                                url: `/stream/movie/kitsu:${cleanKitsuId}.json`,
+                                url: streamUrl,
                                 name: meta.name || `Part ${index + 1}`,
                                 dateUpload: Date.now().toString(),
                             };
-                        });
+                        }); // Keeps them in chronological catalog order
                     }
                 } catch (e) {
                     console.error("Dynamic Kitsu lookup error: ", e);
                 }
             }
 
-            // Standard fallback block
+            // Standard fallback block if only one match is found
             let dateUpload = "0";
             if (episodesMap["1"] && episodesMap["1"].airDate) {
                 dateUpload = new Date(episodesMap["1"].airDate).getTime().toString();
